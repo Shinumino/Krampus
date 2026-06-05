@@ -4,7 +4,7 @@ from discord.ui import Button, View
 from datetime import datetime
 import asyncio
 import io
-from config import ROLE_IDS, CATEGORY_IDS, CARGOS_STAFF, CANAL_LOGS_TRANSCRIPTS_ID
+from config import ROLE_IDS, CATEGORY_IDS, CARGOS_STAFF, CANAL_LOGS_TRANSCRIPTS_ID, EMOJIS_POR_CLASSE
 
 # ====== VIEW COM BOTÕES DO TICKET ======
 class TicketView(View):
@@ -71,6 +71,7 @@ class TicketCog(commands.Cog):
         """
         Cria um ticket após aprovação.
         A categoria é definida dinamicamente com base nos cargos do usuário (DPS/TANK/HEALER).
+        O nome do canal usa emoji correspondente + nickname sanitizado.
         """
         try:
             guild = interaction.guild
@@ -102,29 +103,53 @@ class TicketCog(commands.Cog):
                 print(f"❌ Categoria {categoria_id} não encontrada ou inválida")
                 return None
 
-            # 3. Criar o canal
-            nome_canal = f"ticket-{user_name.lower().replace(' ', '-')[:20]}"
+            # 3. Sanitizar nickname e montar nome do canal com emoji
+            # Substitui caracteres não alfanuméricos ou hífen por '-'
+            nome_sanitizado = ''.join(c if c.isalnum() or c == '-' else '-' for c in nick.lower())
+            nome_sanitizado = nome_sanitizado.replace(' ', '-')
+            # Remove possíveis hífens duplicados (opcional, para limpeza)
+            nome_sanitizado = '-'.join(filter(None, nome_sanitizado.split('-')))
+            emoji = EMOJIS_POR_CLASSE.get(classe_encontrada, "📁")
+            nome_canal = f"{emoji}・{nome_sanitizado}"
+
+            # Verificar duplicidade (evita conflito de nomes)
+            for canal_existente in guild.text_channels:
+                if canal_existente.name == nome_canal and canal_existente.category_id == categoria_id:
+                    print(f"⚠️ Canal já existe: {nome_canal}")
+                    return None
+
+            # 4. Permissões
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                member: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+                member: discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True, attach_files=True
+                ),
+                guild.me: discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, manage_channels=True
+                )
             }
             for cargo_id in self.CARGOS_STAFF:
                 cargo = guild.get_role(cargo_id)
                 if cargo:
                     overwrites[cargo] = discord.PermissionOverwrite(
-                        view_channel=True, send_messages=True, read_message_history=True
+                        view_channel=True, send_messages=True, read_message_history=True, manage_channels=True
                     )
 
+            # 5. Criar canal
             channel = await categoria.create_text_channel(
-                nome_canal,
+                name=nome_canal,
                 overwrites=overwrites,
                 reason=f"Ticket para {user_name} (aprovado)"
             )
 
-            # 4. Embed de boas‑vindas
+            # 6. Embed de boas-vindas
             embed = discord.Embed(
                 title=f"🎫 Ticket de {nick}",
-                description=f"Bem-vindo(a) {member.mention}! A staff está aqui para ajudar.",
+                description=f"Bem-vindo(a) {member.mention}!\n\n"
+                "Este canal é destinado à **análise de builds** pelos nossos Build Leaders.\n"
+                "Envie aqui suas configurações de equipamentos, talentos e dúvidas.\n\n"
+                "Staff e BL's irão te auxiliar para otimizar sua build.",
+
                 color=discord.Color.blue()
             )
             embed.add_field(name="Usuário", value=member.mention, inline=False)
@@ -147,8 +172,10 @@ class TicketCog(commands.Cog):
     # ====== FECHAR TICKET ======
     async def fechar_ticket(self, interaction: discord.Interaction):
         canal = interaction.channel
-        if not canal.name.startswith("ticket-"):
-            return await interaction.followup.send("❌ Não é um canal de ticket.", ephemeral=True)
+        if not canal.name.startswith(("🔮", "🛡️", "💚", "📁")) and "・" not in canal.name:
+            # Fallback: verifica se parece ticket baseado no padrão antigo ou novo
+            if not canal.name.startswith("ticket-"):
+                return await interaction.followup.send("❌ Não é um canal de ticket.", ephemeral=True)
 
         await interaction.followup.send(f"🔒 Ticket fechado por {interaction.user.mention}. O canal será deletado...")
         await asyncio.sleep(2)
@@ -158,8 +185,9 @@ class TicketCog(commands.Cog):
     # ====== ARQUIVAR TICKET (TRANSCRIPT) ======
     async def arquivar_ticket(self, interaction: discord.Interaction):
         canal = interaction.channel
-        if not canal.name.startswith("ticket-"):
-            return await interaction.followup.send("❌ Não é um canal de ticket.", ephemeral=True)
+        if not canal.name.startswith(("🔮", "🛡️", "💚", "📁")) and "・" not in canal.name:
+            if not canal.name.startswith("ticket-"):
+                return await interaction.followup.send("❌ Não é um canal de ticket.", ephemeral=True)
 
         canal_logs = interaction.guild.get_channel(self.CANAL_LOGS_TRANSCRIPTS_ID)
         if not canal_logs:
