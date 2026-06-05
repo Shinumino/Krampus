@@ -501,21 +501,28 @@ class FormularioCog(commands.Cog):
     # ====== LISTENER PARA RESTAURAR VIEWS APÓS REINÍCIO ======
     @commands.Cog.listener()
     async def on_ready(self):
-        """Restaura as views persistentes do formulário."""
         rows = db.get_all_persistent_formularios()
-        for channel_id, message_id, custom_id, embed_title, embed_desc, embed_color in rows:
-            channel = self.bot.get_channel(channel_id)
-            if channel:
-                try:
-                    message = await channel.fetch_message(message_id)
-                    view = FormularioPersistentView(self)
-                    self.bot.add_view(view, message_id=message_id)
-                    print(f"View persistente do formulário restaurada: mensagem {message_id}")
-                except discord.NotFound:
-                    db.remove_persistent_formulario(message_id)
-                    print(f"Mensagem {message_id} não encontrada, removida do banco.")
-            else:
+        for (channel_id, message_id, custom_id, embed_title, embed_desc, embed_color,
+            form_channel_id, result_channel_id) in rows:
+
+        # Restaurar os canais configurados (se ainda não estiverem definidos)
+            if form_channel_id and not self.formulario_channel:
+                self.formulario_channel = self.bot.get_channel(form_channel_id)
+            if result_channel_id and not self.resultados_channel:
+                self.resultados_channel = self.bot.get_channel(result_channel_id)
+
+        # Restaurar a view persistente
+        channel = self.bot.get_channel(channel_id)
+        if channel:
+            try:
+                message = await channel.fetch_message(message_id)
+                view = FormularioPersistentView(self)
+                self.bot.add_view(view, message_id=message_id)
+                print(f"View persistente restaurada: mensagem {message_id}")
+            except discord.NotFound:
                 db.remove_persistent_formulario(message_id)
+        else:
+            db.remove_persistent_formulario(message_id)
 
 async def setup(bot):
     await bot.add_cog(FormularioCog(bot))
