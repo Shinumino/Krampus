@@ -12,6 +12,13 @@ ROLE_IDS = {
     "HEALER": 1440391235268378654,
 }
 
+# Emojis por classe
+EMOJIS_POR_CLASSE = {
+    "DPS": "🔪",
+    "HEALER": "🚑",
+    "TANK": "🔰"
+}
+
 # IDs das categorias correspondentes a cada classe
 CATEGORY_IDS = {
     "DPS": 1460430637243568364,
