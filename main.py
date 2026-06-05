@@ -1,7 +1,10 @@
 import discord
 from discord.ext import commands
 import os
+import database as db
 from dotenv import load_dotenv
+
+db.init_db()  # Inicializa o banco de dados
 
 load_dotenv()
 

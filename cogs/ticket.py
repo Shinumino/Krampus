@@ -1,54 +1,11 @@
 import discord
 from discord.ext import commands
-from discord.ui import Button, View
 from datetime import datetime
 import asyncio
 import io
 from config import ROLE_IDS, CATEGORY_IDS, CARGOS_STAFF, CANAL_LOGS_TRANSCRIPTS_ID, EMOJIS_POR_CLASSE
-
-# ====== VIEW COM BOTÕES DO TICKET ======
-class TicketView(View):
-    def __init__(self, cog, user_id):
-        super().__init__(timeout=None)
-        self.cog = cog
-        self.user_id = user_id
-
-        fechar_btn = Button(
-            style=discord.ButtonStyle.danger,
-            label="❌ Fechar",
-            custom_id=f"ticket_fechar_{user_id}",
-            emoji="🔒"
-        )
-        fechar_btn.callback = self.fechar_callback
-        self.add_item(fechar_btn)
-
-        arquivar_btn = Button(
-            style=discord.ButtonStyle.secondary,
-            label="📦 Arquivar",
-            custom_id=f"ticket_arquivar_{user_id}",
-            emoji="📋"
-        )
-        arquivar_btn.callback = self.arquivar_callback
-        self.add_item(arquivar_btn)
-
-    async def fechar_callback(self, interaction: discord.Interaction):
-        if not await self.cog.verificar_permissao_staff(interaction):
-            return await interaction.response.send_message(
-                "❌ Apenas staff pode fechar tickets!",
-                ephemeral=True
-            )
-        await interaction.response.defer(ephemeral=True)
-        await self.cog.fechar_ticket(interaction)
-
-    async def arquivar_callback(self, interaction: discord.Interaction):
-        if not await self.cog.verificar_permissao_staff(interaction):
-            return await interaction.response.send_message(
-                "❌ Apenas staff pode arquivar tickets!",
-                ephemeral=True
-            )
-        await interaction.response.defer(ephemeral=True)
-        await self.cog.arquivar_ticket(interaction)
-
+import database as db
+from views.ticket_view import TicketPersistentView
 
 # ====== COG PRINCIPAL DE TICKETS ======
 class TicketCog(commands.Cog):
@@ -56,6 +13,7 @@ class TicketCog(commands.Cog):
         self.bot = bot
         self.CANAL_LOGS_TRANSCRIPTS_ID = CANAL_LOGS_TRANSCRIPTS_ID
         self.CARGOS_STAFF = CARGOS_STAFF
+        db.init_db()  # garante que as tabelas existam
 
     async def verificar_permissao_staff(self, interaction: discord.Interaction):
         if interaction.user.guild_permissions.administrator:
@@ -104,15 +62,13 @@ class TicketCog(commands.Cog):
                 return None
 
             # 3. Sanitizar nickname e montar nome do canal com emoji
-            # Substitui caracteres não alfanuméricos ou hífen por '-'
             nome_sanitizado = ''.join(c if c.isalnum() or c == '-' else '-' for c in nick.lower())
             nome_sanitizado = nome_sanitizado.replace(' ', '-')
-            # Remove possíveis hífens duplicados (opcional, para limpeza)
             nome_sanitizado = '-'.join(filter(None, nome_sanitizado.split('-')))
             emoji = EMOJIS_POR_CLASSE.get(classe_encontrada, "📁")
             nome_canal = f"{emoji}・{nome_sanitizado}"
 
-            # Verificar duplicidade (evita conflito de nomes)
+            # Verificar duplicidade
             for canal_existente in guild.text_channels:
                 if canal_existente.name == nome_canal and canal_existente.category_id == categoria_id:
                     print(f"⚠️ Canal já existe: {nome_canal}")
@@ -145,11 +101,7 @@ class TicketCog(commands.Cog):
             # 6. Embed de boas-vindas
             embed = discord.Embed(
                 title=f"🎫 Ticket de {nick}",
-                description=f"Bem-vindo(a) {member.mention}!\n\n"
-                "Este canal é destinado à **análise de builds** pelos nossos Build Leaders.\n"
-                "Envie aqui suas configurações de equipamentos, talentos e dúvidas.\n\n"
-                "Staff e BL's irão te auxiliar para otimizar sua build.",
-
+                description=f"Bem-vindo(a) {member.mention}! A staff está aqui para ajudar.",
                 color=discord.Color.blue()
             )
             embed.add_field(name="Usuário", value=member.mention, inline=False)
@@ -157,7 +109,10 @@ class TicketCog(commands.Cog):
             embed.add_field(name="Criado em", value=datetime.now().strftime("%d/%m/%Y às %H:%M:%S"), inline=False)
             embed.set_footer(text="Guilda Wanted © | Community Server")
 
-            await channel.send(embed=embed, view=TicketView(self, user_id))
+            # 7. Enviar com view persistente e salvar no banco
+            view = TicketPersistentView(self)
+            welcome_msg = await channel.send(embed=embed, view=view)
+            db.add_active_ticket(channel.id, user_id, welcome_msg.id)
 
             print(f"✅ Ticket criado: {channel.name} (categoria {categoria.name}) para {user_name}")
             return channel
@@ -172,12 +127,12 @@ class TicketCog(commands.Cog):
     # ====== FECHAR TICKET ======
     async def fechar_ticket(self, interaction: discord.Interaction):
         canal = interaction.channel
-        if not canal.name.startswith(("🔮", "🛡️", "💚", "📁")) and "・" not in canal.name:
-            # Fallback: verifica se parece ticket baseado no padrão antigo ou novo
-            if not canal.name.startswith("ticket-"):
-                return await interaction.followup.send("❌ Não é um canal de ticket.", ephemeral=True)
+        # Verifica se é ticket (novo padrão com emoji ou antigo)
+        if not (canal.name.startswith(("🔮", "🛡️", "💚", "📁")) and "・" in canal.name) and not canal.name.startswith("ticket-"):
+            return await interaction.followup.send("❌ Não é um canal de ticket.", ephemeral=True)
 
         await interaction.followup.send(f"🔒 Ticket fechado por {interaction.user.mention}. O canal será deletado...")
+        db.remove_active_ticket(canal.id)
         await asyncio.sleep(2)
         await canal.delete(reason=f"Ticket fechado por {interaction.user}")
         print(f"✅ Ticket deletado: {canal.name}")
@@ -185,15 +140,14 @@ class TicketCog(commands.Cog):
     # ====== ARQUIVAR TICKET (TRANSCRIPT) ======
     async def arquivar_ticket(self, interaction: discord.Interaction):
         canal = interaction.channel
-        if not canal.name.startswith(("🔮", "🛡️", "💚", "📁")) and "・" not in canal.name:
-            if not canal.name.startswith("ticket-"):
-                return await interaction.followup.send("❌ Não é um canal de ticket.", ephemeral=True)
+        if not (canal.name.startswith(("🔮", "🛡️", "💚", "📁")) and "・" in canal.name) and not canal.name.startswith("ticket-"):
+            return await interaction.followup.send("❌ Não é um canal de ticket.", ephemeral=True)
 
         canal_logs = interaction.guild.get_channel(self.CANAL_LOGS_TRANSCRIPTS_ID)
         if not canal_logs:
             return await interaction.followup.send("❌ Canal de logs não configurado!", ephemeral=True)
 
-        # Coletar mensagens
+        # Gerar transcript
         transcript = []
         transcript.append(f"{'='*60}\nTRANSCRIPT - {canal.name}\n{'='*60}")
         transcript.append(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
@@ -201,6 +155,8 @@ class TicketCog(commands.Cog):
             timestamp = msg.created_at.strftime("%d/%m/%Y %H:%M:%S")
             author = msg.author.name
             content = msg.content or "[sem conteúdo]"
+            if msg.embeds:
+                content += " [EMBED]"
             transcript.append(f"[{timestamp}] {author}: {content}")
 
         texto = "\n".join(transcript)
@@ -218,6 +174,25 @@ class TicketCog(commands.Cog):
         await interaction.followup.send(f"✅ Ticket arquivado! Transcript enviado para {canal_logs.mention}")
         print(f"✅ Ticket arquivado: {canal.name}")
 
+    # ====== LISTENER PARA RESTAURAR VIEWS APÓS REINÍCIO ======
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Restaura as views dos tickets ativos após reinicialização."""
+        tickets = db.get_all_active_tickets()
+        for channel_id, user_id, welcome_msg_id in tickets:
+            channel = self.bot.get_channel(channel_id)
+            if channel:
+                try:
+                    await channel.fetch_message(welcome_msg_id)  # verifica se a mensagem existe
+                    view = TicketPersistentView(self)
+                    self.bot.add_view(view, message_id=welcome_msg_id)
+                    print(f"View persistente restaurada para ticket {channel.name}")
+                except discord.NotFound:
+                    db.remove_active_ticket(channel_id)
+                    print(f"Mensagem de boas-vindas do ticket {channel.name} não encontrada, removido do banco.")
+            else:
+                db.remove_active_ticket(channel_id)
+                print(f"Canal {channel_id} não existe mais, removido do banco.")
 
 async def setup(bot):
     await bot.add_cog(TicketCog(bot))
