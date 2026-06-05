@@ -7,7 +7,13 @@ load_dotenv()
 
 class YakuzaBot(commands.Bot):
     def __init__(self):
-        intents = discord.Intents.all()
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        intents.guilds = True
+        intents.presences = False
+        intents.voice_states = False
+        intents.message_content = False
         super().__init__(command_prefix="/", intents=intents)
 
     async def setup_hook(self):
