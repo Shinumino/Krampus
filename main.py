@@ -51,5 +51,3 @@ async def sync(ctx):
     await ctx.send("✅ Comandos slash sincronizados!")
 
 bot.run(token)
-
-# Teste
