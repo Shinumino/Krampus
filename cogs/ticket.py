@@ -56,8 +56,7 @@ class TicketCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-        # IDs de configuração
-        self.CATEGORIA_TICKETS_ID = 1460288050566398075
+        # IDs de configuração (categoria fixa removida, agora usamos mapeamento dinâmico)
         self.CANAL_LOGS_TRANSCRIPTS_ID = 1470070755604697212
 
         # IDs dos cargos de staff (mesmo do formulario.py)
@@ -65,6 +64,18 @@ class TicketCog(commands.Cog):
             1449931317675429960,  # Dev
             1442625294078050456,  # Staff
         ]
+
+        # Mapeamento de cargos para suas respectivas categorias
+        self.ROLE_IDS = {
+            "DPS": 1440390981307465949,
+            "TANK": 1440391288615735380,
+            "HEALER": 1440391235268378654,
+        }
+        self.CATEGORY_IDS = {
+            "DPS": 1460430637243568364,
+            "TANK": 1460430679182672074,
+            "HEALER": 1460430719489802434,
+        }
 
     # ====== VERIFICAR PERMISSÃO STAFF ======
     async def verificar_permissao_staff(self, interaction: discord.Interaction):
@@ -89,10 +100,25 @@ class TicketCog(commands.Cog):
                 print(f"❌ Membro não encontrado para criar ticket: {user_id}")
                 return None
 
-            # Obter a categoria
-            categoria = guild.get_channel(self.CATEGORIA_TICKETS_ID)
+            # === NOVA LÓGICA: VERIFICAR CARGOS E ESCOLHER CATEGORIA ===
+            member_roles_ids = [role.id for role in member.roles]
+
+            # Determinar qual categoria usar baseado no primeiro cargo encontrado (ordem: DPS -> TANK -> HEALER)
+            categoria_id = None
+            for role_name in ["DPS", "TANK", "HEALER"]:
+                if self.ROLE_IDS[role_name] in member_roles_ids:
+                    categoria_id = self.CATEGORY_IDS[role_name]
+                    break
+
+            # Se nenhum cargo for encontrado, NÃO criar ticket e loggar erro
+            if not categoria_id:
+                print(f"❌ Usuário {user_name} (ID: {user_id}) não possui cargo DPS, TANK ou HEALER. Ticket NÃO criado.")
+                return None
+
+            # Obter a categoria correspondente
+            categoria = guild.get_channel(categoria_id)
             if not categoria or not isinstance(categoria, discord.CategoryChannel):
-                print(f"❌ Categoria de tickets não encontrada ou inválida: {self.CATEGORIA_TICKETS_ID}")
+                print(f"❌ Categoria {categoria_id} não encontrada ou inválida para o usuário {user_name}")
                 return None
 
             # Nome do canal: ticket-{user.name}
@@ -120,7 +146,7 @@ class TicketCog(commands.Cog):
             # Criar embed inicial
             embed = discord.Embed(
                 title=f"🎫 Ticket de {nick}",
-                description=f"Bem-vindo(a) ao seu ticket! A staff está aqui para ajudar.",
+                description=f"Bem-vindo(a) ao seu ticket! Mande sua build completa para nossos Build Leaders analisarem.\n\n",
                 color=0x5865f2
             )
             embed.add_field(name="Usuário", value=member.mention, inline=False)
