@@ -172,8 +172,8 @@ class FormularioCog(commands.Cog):
             "TANK": 1440391288615735380,
             "HEALER": 1440391235268378654,
         }
-        self.CARGO_FIXO_ID = 1440392071910264853
-        self.CARGO_A_REMOVER_ID = 779618880028803083
+        self.CARGO_FIXO_ID = 1440392071910264853 # Wanted
+        self.CARGO_A_REMOVER_ID = 779618880028803083 # .gg/wantedd
         self.CARGOS_PERMITIDOS = [
             1449931317675429960,  # Dev
             1442625294078050456,   # Staff
