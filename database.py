@@ -1,111 +1,201 @@
-# database.py
 import sqlite3
 from typing import List, Tuple
 
+# ======================================================
+# CONFIGURAÇÃO
+# ======================================================
+
+# Caminho do arquivo de banco de dados SQLite
 DB_PATH = "bot_data.db"
 
+# ======================================================
+# INICIALIZAÇÃO DO BANCO DE DADOS
+# ======================================================
+
 def init_db():
-    """Inicializa o banco de dados e adiciona colunas faltantes (migração)."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    """
+    Inicializa o banco de dados criando as tabelas necessárias (se não existirem)
+    e executa migrações para adicionar colunas que possam estar faltando
+    em bancos de dados já existentes.
 
-    # Tabela para mensagens de formulário persistentes (estrutura base)
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS persistent_formularios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            channel_id INTEGER NOT NULL,
-            message_id INTEGER NOT NULL,
-            custom_id TEXT NOT NULL,
-            embed_title TEXT,
-            embed_description TEXT,
-            embed_color INTEGER
-        )
-    ''')
+    Deve ser chamado uma vez na inicialização do bot.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
 
-    # Migração: adicionar colunas que podem faltar
-    c.execute("PRAGMA table_info(persistent_formularios)")
-    existing_cols = [col[1] for col in c.fetchall()]
+        # --------------------------------------------------
+        # Tabela: persistent_formularios
+        # Armazena os embeds com botões que o bot enviou,
+        # para que as views possam ser restauradas após reinício.
+        # --------------------------------------------------
+        c.execute('''
+                              CREATE TABLE IF NOT EXISTS persistent_formularios (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id            INTEGER NOT NULL,  -- canal onde o embed foi enviado
+                message_id            INTEGER NOT NULL,  -- ID da mensagem do embed
+                custom_id             TEXT    NOT NULL,  -- ID customizado da view/botão
+                embed_title           TEXT,              -- título do embed
+                embed_description     TEXT,              -- descrição do embed
+                embed_color           INTEGER,           -- cor do embed (int)
+                formulario_channel_id INTEGER,           -- canal onde os formulários são abertos
+                resultados_channel_id INTEGER            -- canal onde os resultados são enviados
+            )
+        ''')
 
-    if "formulario_channel_id" not in existing_cols:
-        c.execute("ALTER TABLE persistent_formularios ADD COLUMN formulario_channel_id INTEGER")
-        print("Migração: coluna 'formulario_channel_id' adicionada.")
+        # Índice em message_id para acelerar buscas e remoções por mensagem
+        c.execute('''
+            CREATE INDEX IF NOT EXISTS idx_formularios_message_id
+            ON persistent_formularios(message_id)
+        ''')
 
-    if "resultados_channel_id" not in existing_cols:
-        c.execute("ALTER TABLE persistent_formularios ADD COLUMN resultados_channel_id INTEGER")
-        print("Migração: coluna 'resultados_channel_id' adicionada.")
+        # --------------------------------------------------
+        # Migração: adiciona colunas que podem faltar em
+        # bancos criados por versões anteriores do bot
+        # --------------------------------------------------
+        c.execute("PRAGMA table_info(persistent_formularios)")
+        existing_cols = [col[1] for col in c.fetchall()]
 
-    # Tabela para tickets ativos
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS active_tickets (
-            channel_id INTEGER PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            welcome_message_id INTEGER NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+        if "formulario_channel_id" not in existing_cols:
+            c.execute("ALTER TABLE persistent_formularios ADD COLUMN formulario_channel_id INTEGER")
+            print("[DB] Migração: coluna 'formulario_channel_id' adicionada")
 
-    conn.commit()
-    conn.close()
+        if "resultados_channel_id" not in existing_cols:
+            c.execute("ALTER TABLE persistent_formularios ADD COLUMN resultados_channel_id INTEGER")
+            print("[DB] Migração: coluna 'resultados_channel_id' adicionada")
 
-# ====== Funções para formulário persistente ======
-def add_persistent_formulario(channel_id: int, message_id: int, custom_id: str,
-                              embed_title: str = None, embed_description: str = None,
-                              embed_color: int = None,
-                              formulario_channel_id: int = None,
-                              resultados_channel_id: int = None) -> None:
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO persistent_formularios
-        (channel_id, message_id, custom_id, embed_title, embed_description, embed_color,
-         formulario_channel_id, resultados_channel_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (channel_id, message_id, custom_id, embed_title, embed_description, embed_color,
-          formulario_channel_id, resultados_channel_id))
-    conn.commit()
-    conn.close()
+        # --------------------------------------------------
+        # Tabela: active_tickets
+        # Armazena os canais de ticket ativos para que o bot
+        # possa reconhecê-los após reinício.
+        # --------------------------------------------------
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS active_tickets (
+                channel_id         INTEGER PRIMARY KEY,   -- canal do ticket (único por ticket)
+                user_id            INTEGER NOT NULL,      -- usuário dono do ticket
+                welcome_message_id INTEGER NOT NULL,      -- ID da mensagem de boas-vindas no ticket
+                created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        #commit automatico ao sair do bloco `with` sem erros
+
+# ======================================================
+# FUNÇÕES: persistent_formularios
+# ======================================================
+
+def add_persistent_formulario(
+    channel_id: int,
+    message_id: int,
+    custom_id: str,
+    embed_title: str = None,
+    embed_description: str = None,
+    embed_color: int = None,
+    formulario_channel_id: int = None,
+    resultados_channel_id: int = None
+    ) -> None:
+    """
+    Salva um formulário persistente no banco.
+    Deve ser chamado após o bot enviar o embed com botões,
+    passando os IDs necessários para restaurar a view depois.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute('''
+            INSERT INTO persistent_formularios
+                (channel_id, message_id, custom_id, embed_title, embed_description,
+                 embed_color, formulario_channel_id, resultados_channel_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            channel_id,
+            message_id,
+            custom_id,
+            embed_title,
+            embed_description,
+            embed_color,
+            formulario_channel_id,
+            resultados_channel_id
+        ))
 
 def remove_persistent_formulario(message_id: int) -> None:
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM persistent_formularios WHERE message_id = ?", (message_id,))
-    conn.commit()
-    conn.close()
+    """
+    Remove um formulário persistente pelo ID da mensagem.
+    Deve ser chamado quando a mensagem não for mais encontrada no Discord
+    (ex: foi deletada manualmente).
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "DELETE FROM persistent_formularios WHERE message_id = ?",
+            (message_id,)
+        )
 
 def get_all_persistent_formularios() -> List[Tuple]:
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        SELECT channel_id, message_id, custom_id, embed_title, embed_description, embed_color,
-               formulario_channel_id, resultados_channel_id
-        FROM persistent_formularios
-    ''')
-    rows = c.fetchall()
-    conn.close()
-    return rows
+    """
+    Retorna uma lista de todos os formulários persistentes salvos.
+    Usado no on_ready para restaurar as views após reinício do bot.
 
-# ====== Funções para tickets ativos ======
+    Retorna uma lista de tuplas com:
+    (channel_id, message_id, custom_id, embed_title, embed_description, embed_color,
+     formulario_channel_id, resultados_channel_id)
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute('''
+            SELECT
+                channel_id,
+                message_id,
+                custom_id,
+                embed_title,
+                embed_description,
+                embed_color,
+                formulario_channel_id,
+                resultados_channel_id
+            FROM persistent_formularios
+        ''')
+        return c.fetchall()
+
+# ======================================================
+# FUNÇÕES: active_tickets
+# ======================================================
+
 def add_active_ticket(channel_id: int, user_id: int, welcome_message_id: int) -> None:
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        INSERT OR REPLACE INTO active_tickets (channel_id, user_id, welcome_message_id)
-        VALUES (?, ?, ?)
-    ''', (channel_id, user_id, welcome_message_id))
-    conn.commit()
-    conn.close()
+    """
+    Registra um ticket ativo no banco.
+    Usa INSERT OR REPLACE para sobrescrever caso o canal ja exista.
+
+    Atenção: o INSERT OR REPLACE deleta e recria a linha internamente,
+    o que reseta o campo `created_at`. Se isso for um problema,
+    considere usar INSERT OR IGNORE + UPDATE separados.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute('''
+            INSERT OR REPLACE INTO active_tickets
+                (channel_id, user_id, welcome_message_id)
+            VALUES (?, ?, ?)
+        ''', (
+            channel_id,
+            user_id,
+            welcome_message_id
+        ))
 
 def remove_active_ticket(channel_id: int) -> None:
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM active_tickets WHERE channel_id = ?", (channel_id,))
-    conn.commit()
-    conn.close()
+    """
+    Remove um ticket ativo pelo ID do canal.
+    Deve ser chamado quando o canal de ticket for fechado/deletado.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "DELETE FROM active_tickets WHERE channel_id = ?",
+            (channel_id,)
+        )
 
 def get_all_active_tickets() -> List[Tuple]:
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT channel_id, user_id, welcome_message_id FROM active_tickets")
-    rows = c.fetchall()
-    conn.close()
-    return rows
+    """
+    Retorna todos os tickets ativos salvos.
+    Usado no on_ready para recarregar o estado dos tickets após reinício.
+
+    Retorna uma lista de tuplas com:
+        (channel_id, user_id, welcome_message_id)
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        c.execute("SELECT channel_id, user_id, welcome_message_id FROM active_tickets")
+        return c.fetchall()
