@@ -241,7 +241,9 @@ class FormularioCog(commands.Cog):
             custom_id="iniciar_formulario",
             embed_title=embed.title,
             embed_description=embed.description,
-            embed_color=embed.color.value
+            embed_color=embed.color.value,
+            formulario_channel_id=canal_formulario.id,
+            resultados_channel_id=canal_resultados.id
         )
 
         await interaction.response.send_message(
