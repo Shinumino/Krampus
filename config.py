@@ -1,15 +1,26 @@
 # config.py
 import os
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
+
+def _env_int(nome: str, padrao: int) -> int:
+    """Permite trocar um ID pelo .env (útil no servidor de teste) sem editar código."""
+    valor = os.getenv(nome)
+    return int(valor) if valor else padrao
+
+
+# Fuso horário da guild (usado para agendar as heroes)
+TIMEZONE = ZoneInfo(os.getenv("GUILD_TIMEZONE", "America/Sao_Paulo"))
+
 # IDs dos cargos por classe (DPS, TANK, HEALER)
 ROLE_IDS = {
-    "DPS": 1440390981307465949,
-    "TANK": 1440391288615735380,
-    "HEALER": 1440391235268378654,
+    "DPS": _env_int("ROLE_DPS", 1440390981307465949),
+    "TANK": _env_int("ROLE_TANK", 1440391288615735380),
+    "HEALER": _env_int("ROLE_HEALER", 1440391235268378654),
 }
 
 # Emojis por classe
@@ -28,9 +39,15 @@ CATEGORY_IDS = {
 
 # IDs dos cargos com permissão de staff (DEV, STAFF)
 CARGOS_STAFF = [
-    1449931317675429960,  # DEV
-    1442625294078050456,   # STAFF
+    _env_int("ROLE_DEV", 1449931317675429960),   # DEV
+    _env_int("ROLE_STAFF", 1442625294078050456),  # STAFF
 ]
 
 # ID do canal onde os transcripts serão enviados
-CANAL_LOGS_TRANSCRIPTS_ID = 1470070755604697212
+CANAL_LOGS_TRANSCRIPTS_ID = _env_int("CANAL_LOGS_TRANSCRIPTS", 1470070755604697212)
+
+# Canal de logs dos alistamentos finalizados (antes hardcoded em cogs/alistamento.py)
+CANAL_LOGS_ALISTAMENTO_ID = _env_int("CANAL_LOGS_ALISTAMENTO", 1450014685725200416)
+
+# Canal de fila mencionado nos lembretes de heroes (0 = só texto, sem link)
+CANAL_FILA_ID = _env_int("CANAL_FILA", 0)

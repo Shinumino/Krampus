@@ -1,2 +1,5 @@
 /.env
 /.github
+/data/
+__pycache__/
+*.pyc
