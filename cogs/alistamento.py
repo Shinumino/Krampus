@@ -517,7 +517,15 @@ class Alistamento(commands.Cog):
 
         view = AlistamentoView(self, heroes.id)
         self._registrar_view(heroes.id, view)
-        resposta = await interaction.response.send_message(embed=render_embed(heroes), view=view)
+        try:
+            resposta = await interaction.response.send_message(embed=render_embed(heroes), view=view)
+        except discord.HTTPException:
+            # A mensagem não foi publicada: desfaz o rastreio para não deixar
+            # uma heroes fantasma sem mensagem mandando lembretes no canal
+            self.ativas.pop(heroes.id, None)
+            heroes.apagar_json()
+            self._parar_views(heroes.id)
+            raise
 
         # Guarda o id da mensagem para conseguir apagá-la/reativá-la depois
         try:
