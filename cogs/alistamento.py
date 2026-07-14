@@ -709,7 +709,7 @@ class Alistamento(commands.Cog):
 
     @app_commands.command(
         name="puxar",
-        description="Puxa todo mundo do canal de fila para o canal de voz em que você está",
+        description="Caller: puxa os inscritos do seu alistamento da fila para a sua call",
     )
     @app_commands.guild_only()
     @app_commands.describe(fila="Canal de voz de origem (padrão: o canal de fila configurado)")
@@ -727,6 +727,21 @@ class Alistamento(commands.Cog):
         if not pode:
             await interaction.response.send_message(
                 "❌ Você não tem permissão para usar este comando!", ephemeral=True
+            )
+            return
+
+        # O /puxar é do caller: exige um alistamento ativo SEU, e é a lista de
+        # inscritos dele que define quem sai da fila
+        minha_heroes = None
+        for aberta in self.ativas.values():
+            if aberta.criador_id == interaction.user.id:
+                minha_heroes = aberta
+                break
+        if minha_heroes is None:
+            await interaction.response.send_message(
+                "❌ O /puxar é para o caller: você precisa ter um alistamento ativo "
+                "para puxar os inscritos dele.",
+                ephemeral=True,
             )
             return
 
@@ -764,14 +779,8 @@ class Alistamento(commands.Cog):
             )
             return
 
-        # Filtro: só inscritos das heroes ativas. Sem nenhuma heroes ativa,
-        # o comando vira ferramenta bruta e puxa todo mundo da fila
-        permitidos = None
-        if self.ativas:
-            permitidos = set()
-            for h in self.ativas.values():
-                permitidos.add(h.criador_id)
-                permitidos.update(p.user_id for p in h.participantes)
+        # Só os inscritos DA SUA heroes (+ você) saem da fila
+        permitidos = {p.user_id for p in minha_heroes.participantes} | {minha_heroes.criador_id}
 
         # Mover várias pessoas leva mais de 3s; defer segura a interação aberta
         await interaction.response.defer(ephemeral=True)
@@ -783,7 +792,7 @@ class Alistamento(commands.Cog):
             if deixados:
                 await interaction.followup.send(
                     f"Ninguém foi puxado: **{deixados}** pessoa(s) na fila, mas nenhuma "
-                    f"inscrita em heroes ativa.",
+                    f"inscrita na sua heroes **{minha_heroes.boss}**.",
                     ephemeral=True,
                 )
             else:
@@ -793,7 +802,7 @@ class Alistamento(commands.Cog):
             return
         resposta = f"✅ **{movidos}** pessoa(s) puxada(s) de {origem.mention} para {destino.mention}."
         if deixados:
-            resposta += f"\n👥 **{deixados}** ficaram na fila por não estarem inscritas em nenhuma heroes ativa."
+            resposta += f"\n👥 **{deixados}** ficaram na fila por não estarem inscritas na sua heroes."
         if falhas:
             resposta += (
                 f"\n⚠️ **{falhas}** não puderam ser movidas. Confira se tenho as permissões "
