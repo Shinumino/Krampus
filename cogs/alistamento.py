@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import discord
 from discord import app_commands
@@ -8,7 +8,13 @@ from discord.ui import View, Button, DynamicItem
 
 import config
 import database as db
-from heroes import Heroes, proxima_ocorrencia, DIAS_SEMANA, AUTO_FINALIZAR_APOS
+from heroes import (
+    Heroes,
+    proxima_ocorrencia,
+    DIAS_SEMANA,
+    AUTO_FINALIZAR_APOS,
+    LEMBRETE_ANTECEDENCIAS_MIN,
+)
 
 # Opções para boss (pode adicionar mais depois)
 BOSSES = [
@@ -303,6 +309,7 @@ class Alistamento(commands.Cog):
                 heroes.apagar_json()
                 self.ativas.pop(heroes.id, None)
                 self._parar_views(heroes.id)
+                await self._apagar_lembretes(heroes)
                 print(f"[HEROES] Heroes {heroes.id} ({heroes.boss}) cancelada: mensagem apagada manualmente")
                 break
 
@@ -319,10 +326,15 @@ class Alistamento(commands.Cog):
                 for acao in heroes.acoes_pendentes(agora):
                     if acao.startswith("lembrete_"):
                         await self._enviar_lembrete(heroes, int(acao.split("_")[1]))
+                    elif acao == "auto_puxar":
+                        await self._puxar_fila_automatico(heroes)
                     elif acao == "aviso_criador":
                         await self._avisar_criador(heroes)
                     elif acao == "auto_finalizar":
                         await self.finalizar_heroes(heroes, finalizada_por="auto")
+                # Apaga lembretes cujo prazo venceu com o bot desligado
+                if heroes.id in self.ativas:
+                    await self._apagar_lembretes(heroes, apenas_vencidos_em=agora)
             except Exception as e:
                 print(f"[HEROES] Erro no relógio para heroes {heroes.id}: {e}")
 
@@ -354,10 +366,112 @@ class Alistamento(commands.Cog):
             [f"<@{heroes.criador_id}>"] + [f"<@{p.user_id}>" for p in heroes.participantes]
         )
         fila = f" <#{config.CANAL_FILA_ID}>" if config.CANAL_FILA_ID else " de fila"
-        await canal.send(
+        # O lembrete se auto-apaga quando o próximo evento chega (o lembrete
+        # seguinte ou o início da heroes), para não acumular sujeira no chat
+        menores = [m for m in LEMBRETE_ANTECEDENCIAS_MIN if m < minutos]
+        vida = max(60, (restam - (max(menores) if menores else 0)) * 60)
+        mensagem = await canal.send(
             f"{mencoes}\n⏰ O Evento **{heroes.boss}** começa em **{restam} minutos**! "
-            f"Entrem no canal{fila}!"
+            f"Entrem no canal{fila}!",
+            delete_after=vida,
         )
+        # Registra a mensagem: o delete_after morre se o bot reiniciar, e aí
+        # é o relógio quem apaga as vencidas (via _apagar_lembretes)
+        heroes.lembretes_mensagens.append({
+            "message_id": mensagem.id,
+            "channel_id": canal.id,
+            "apagar_em": (datetime.now(config.TIMEZONE) + timedelta(seconds=vida)).isoformat(),
+        })
+        heroes.salvar()
+
+    async def _apagar_lembretes(self, heroes: Heroes, apenas_vencidos_em: datetime = None):
+        """Apaga as mensagens de lembrete registradas. Com `apenas_vencidos_em`,
+        só as que passaram do prazo (caso o delete_after tenha morrido num
+        restart); sem, apaga todas (finalização/cancelamento)."""
+        restantes = []
+        for registro in heroes.lembretes_mensagens:
+            if apenas_vencidos_em is not None:
+                if datetime.fromisoformat(registro["apagar_em"]) > apenas_vencidos_em:
+                    restantes.append(registro)
+                    continue
+            canal = await self._canal(registro["channel_id"])
+            if canal:
+                try:
+                    await canal.get_partial_message(registro["message_id"]).delete()
+                except discord.HTTPException:
+                    pass  # já se auto-apagou (caminho normal do delete_after)
+        if len(restantes) != len(heroes.lembretes_mensagens):
+            heroes.lembretes_mensagens = restantes
+            if heroes.id in self.ativas:
+                heroes.salvar()
+
+    async def _mover_membros(self, origem, destino, motivo: str):
+        """Move todos de um canal de voz para outro; devolve (movidos, falhas).
+        Ignora bots e quem já saiu do canal durante o processo."""
+        movidos, falhas = 0, 0
+        for membro in list(origem.members):
+            if membro.bot:
+                continue
+            if membro.voice is None or membro.voice.channel != origem:
+                continue  # saiu da fila enquanto movíamos os outros
+            try:
+                await membro.move_to(destino, reason=motivo)
+                movidos += 1
+            except discord.HTTPException:
+                falhas += 1
+        return movidos, falhas
+
+    async def _puxar_fila_automatico(self, heroes: Heroes):
+        """No início da heroes: se o shot caller já está numa call válida, puxa
+        quem espera na fila para junto dele. Enquanto ele não conectar, tenta de
+        novo a cada tick, até a janela AUTO_PUXAR_JANELA fechar."""
+        if not config.CANAL_FILA_ID:
+            # Sem fila configurada não há o que puxar; encerra a janela
+            heroes.puxada_automatica_feita = True
+            heroes.salvar()
+            return
+
+        canal_texto = await self._canal(heroes.channel_id)
+        if canal_texto is None or canal_texto.guild is None:
+            return  # sem acesso ao servidor agora; tenta no próximo tick
+
+        guild = canal_texto.guild
+        fila = guild.get_channel(config.CANAL_FILA_ID)
+        if not isinstance(fila, (discord.VoiceChannel, discord.StageChannel)):
+            heroes.puxada_automatica_feita = True
+            heroes.salvar()
+            print(f"[HEROES] CANAL_FILA {config.CANAL_FILA_ID} não é canal de voz; puxada automática desativada")
+            return
+
+        criador = guild.get_member(heroes.criador_id)
+        if criador is None:
+            try:
+                criador = await guild.fetch_member(heroes.criador_id)
+            except discord.HTTPException:
+                criador = None
+        voz = criador.voice.channel if (criador and criador.voice) else None
+        if voz is None or voz.id == fila.id:
+            return  # shot caller ainda não está na call da heroes; tenta depois
+        if config.CANAIS_HEROES and voz.id not in config.CANAIS_HEROES:
+            return  # está numa call que não é de heroes; não puxa ninguém
+
+        # Marca ANTES de mover (padrão da casa: nunca repetir em caso de erro)
+        heroes.puxada_automatica_feita = True
+        heroes.salvar()
+
+        if not fila.members:
+            return
+        movidos, falhas = await self._mover_membros(
+            fila, voz, f"Início da heroes {heroes.boss}"
+        )
+        if movidos or falhas:
+            aviso = f"🎺 Puxei **{movidos}** pessoa(s) da fila {fila.mention} para {voz.mention}!"
+            if falhas:
+                aviso += f" ({falhas} não puderam ser movidas)"
+            try:
+                await canal_texto.send(aviso, delete_after=300)
+            except discord.HTTPException:
+                pass
 
     async def _avisar_criador(self, heroes: Heroes):
         heroes.aviso_criador_enviado = True
@@ -431,6 +545,9 @@ class Alistamento(commands.Cog):
                     await canal.get_partial_message(heroes.message_id).delete()
                 except discord.HTTPException:
                     pass  # mensagem já apagada manualmente
+
+            # Lembretes que ainda estejam no chat somem junto
+            await self._apagar_lembretes(heroes)
 
             # 5. Remove os botões da DM do criador (se ela existiu), para não
             #    deixar uma DM antiga com botões clicáveis apontando pro nada
@@ -566,6 +683,85 @@ class Alistamento(commands.Cog):
             if current.lower() in dia.lower()
         ]
         return filtered[:25]
+
+    # ------------------------------------------------------------------
+    # /puxar: move quem está no canal de fila para a call de quem chamou
+    # ------------------------------------------------------------------
+
+    @app_commands.command(
+        name="puxar",
+        description="Puxa todo mundo do canal de fila para o canal de voz em que você está",
+    )
+    @app_commands.guild_only()
+    @app_commands.describe(fila="Canal de voz de origem (padrão: o canal de fila configurado)")
+    async def puxar(
+        self,
+        interaction: discord.Interaction,
+        fila: discord.VoiceChannel | discord.StageChannel | None = None,
+    ):
+        # Staff/admin apenas
+        cargos = [role.id for role in interaction.user.roles]
+        pode = (
+            any(role_id in config.CARGOS_STAFF for role_id in cargos)
+            or interaction.user.guild_permissions.administrator
+        )
+        if not pode:
+            await interaction.response.send_message(
+                "❌ Você não tem permissão para usar este comando!", ephemeral=True
+            )
+            return
+
+        # O destino é o canal de voz onde QUEM CHAMOU está (a call da heroes)
+        if interaction.user.voice is None or interaction.user.voice.channel is None:
+            await interaction.response.send_message(
+                "❌ Entre primeiro no canal de voz da heroes: o destino é onde você está.",
+                ephemeral=True,
+            )
+            return
+        destino = interaction.user.voice.channel
+
+        origem = fila
+        if origem is None and config.CANAL_FILA_ID:
+            canal_cfg = interaction.guild.get_channel(config.CANAL_FILA_ID)
+            if isinstance(canal_cfg, (discord.VoiceChannel, discord.StageChannel)):
+                origem = canal_cfg
+        if origem is None:
+            await interaction.response.send_message(
+                "❌ Nenhum canal de fila configurado. Informe no parâmetro `fila` "
+                "ou configure CANAL_FILA no .env.",
+                ephemeral=True,
+            )
+            return
+        if origem.id == destino.id:
+            await interaction.response.send_message(
+                "❌ A fila e o destino são o mesmo canal.", ephemeral=True
+            )
+            return
+
+        # Mover várias pessoas leva mais de 3s; defer segura a interação aberta
+        await interaction.response.defer(ephemeral=True)
+        movidos, falhas = await self._mover_membros(
+            origem, destino, f"/puxar por {interaction.user.display_name}"
+        )
+
+        if movidos == 0 and falhas == 0:
+            await interaction.followup.send(
+                f"O canal {origem.mention} está vazio, ninguém para puxar.", ephemeral=True
+            )
+            return
+        resposta = f"✅ **{movidos}** pessoa(s) puxada(s) de {origem.mention} para {destino.mention}."
+        if falhas:
+            resposta += (
+                f"\n⚠️ **{falhas}** não puderam ser movidas. Confira se tenho a permissão "
+                f"**Mover Membros**, se essas pessoas podem entrar no canal de destino, "
+                f"ou se saíram da call durante o comando."
+            )
+        if isinstance(destino, discord.StageChannel):
+            resposta += (
+                "\n⚠️ O destino é um canal **Stage**: quem chega entra como plateia (mudo) "
+                "e precisa ser promovido para falar."
+            )
+        await interaction.followup.send(resposta, ephemeral=True)
 
 
 async def setup(bot):

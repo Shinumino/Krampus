@@ -14,6 +14,14 @@ def _env_int(nome: str, padrao: int) -> int:
     return int(valor) if valor else padrao
 
 
+def _env_int_list(nome: str, padrao: list) -> list:
+    """Lista de IDs separados por vírgula no .env (ex: CANAIS_HEROES=111,222)."""
+    valor = os.getenv(nome)
+    if not valor:
+        return padrao
+    return [int(parte.strip()) for parte in valor.split(",") if parte.strip()]
+
+
 # Fuso horário da guild (usado para agendar as heroes)
 _tz_nome = os.getenv("GUILD_TIMEZONE", "America/Sao_Paulo")
 try:
@@ -62,3 +70,8 @@ CANAL_LOGS_ALISTAMENTO_ID = _env_int("CANAL_LOGS_ALISTAMENTO", 14500146857252004
 
 # Canal de fila mencionado nos lembretes de heroes (0 = só texto, sem link)
 CANAL_FILA_ID = _env_int("CANAL_FILA", 0)
+
+# Canais de voz onde acontecem as heroes. Se preenchido, a puxada automática
+# da fila só acontece quando o shot caller está num deles; vazio = qualquer
+# canal de voz serve (menos a própria fila)
+CANAIS_HEROES = _env_int_list("CANAIS_HEROES", [])
