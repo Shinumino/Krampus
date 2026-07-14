@@ -599,6 +599,21 @@ class Alistamento(commands.Cog):
             )
             return
 
+        # 1 alistamento aberto por pessoa: finalize o atual antes de abrir outro
+        for aberta in self.ativas.values():
+            if aberta.criador_id == interaction.user.id:
+                link = (
+                    f"https://discord.com/channels/{interaction.guild_id}"
+                    f"/{aberta.channel_id}/{aberta.message_id}"
+                )
+                await interaction.response.send_message(
+                    f"❌ Você já tem um alistamento aberto: **{aberta.boss} - "
+                    f"{aberta.dia} {aberta.hora}**.\n"
+                    f"Finalize-o antes de abrir outro: {link}",
+                    ephemeral=True,
+                )
+                return
+
         # Validar boss
         if boss not in BOSSES:
             await interaction.response.send_message(
@@ -781,9 +796,10 @@ class Alistamento(commands.Cog):
             resposta += f"\n👥 **{deixados}** ficaram na fila por não estarem inscritas em nenhuma heroes ativa."
         if falhas:
             resposta += (
-                f"\n⚠️ **{falhas}** não puderam ser movidas. Confira se tenho a permissão "
-                f"**Mover Membros**, se essas pessoas podem entrar no canal de destino, "
-                f"ou se saíram da call durante o comando."
+                f"\n⚠️ **{falhas}** não puderam ser movidas. Confira se tenho as permissões "
+                f"**Mover Membros** e **Conectar** no canal de destino (quem é movido não "
+                f"precisa poder conectar, mas EU preciso), ou se essas pessoas saíram da "
+                f"call durante o comando."
             )
         if isinstance(destino, discord.StageChannel):
             resposta += (
