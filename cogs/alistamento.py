@@ -43,7 +43,7 @@ def render_embed(heroes: Heroes, finalizado: bool = False) -> discord.Embed:
         description=(
             f"**MASTERY MIN:** **{heroes.mastery}**\n\n"
             f"{EMOJIS['SHOT']} **SHOT CALLER:** <@{heroes.criador_id}>\n"
-            f"⏰ **Começa:** <t:{ts}:F> (<t:{ts}:R>)"
+            f"**Começa:** <t:{ts}:F> (<t:{ts}:R>)"
         ),
         color=COR_FINALIZADO if finalizado else COR_BORDA_ATIVA,
     )
@@ -355,7 +355,7 @@ class Alistamento(commands.Cog):
         )
         fila = f" <#{config.CANAL_FILA_ID}>" if config.CANAL_FILA_ID else " de fila"
         await canal.send(
-            f"{mencoes}\n⏰ A heroes **{heroes.boss}** começa em **{restam} minutos**! "
+            f"{mencoes}\n⏰ O Evento **{heroes.boss}** começa em **{restam} minutos**! "
             f"Entrem no canal{fila}!"
         )
 
