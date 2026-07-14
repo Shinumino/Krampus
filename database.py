@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from typing import List, Tuple
 
@@ -5,8 +6,10 @@ from typing import List, Tuple
 # CONFIGURAÇÃO
 # ======================================================
 
-# Caminho do arquivo de banco de dados SQLite
-DB_PATH = "bot_data.db"
+# Caminho do arquivo de banco de dados SQLite, ancorado na pasta deste arquivo
+# (um caminho relativo criaria um banco novo e vazio se o bot fosse iniciado
+# de outro diretório de trabalho)
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_data.db")
 
 # ======================================================
 # INICIALIZAÇÃO DO BANCO DE DADOS
@@ -62,6 +65,49 @@ def init_db():
         if "resultados_channel_id" not in existing_cols:
             c.execute("ALTER TABLE persistent_formularios ADD COLUMN resultados_channel_id INTEGER")
             print("[DB] Migração: coluna 'resultados_channel_id' adicionada")
+
+        # --------------------------------------------------
+        # Tabela: active_tickets
+        # Nenhum código criava esta tabela (só existia dentro do
+        # bot_data.db commitado); num banco novo a migração abaixo
+        # quebrava com "no such table: active_tickets".
+        # --------------------------------------------------
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS active_tickets (
+                channel_id         INTEGER PRIMARY KEY,
+                user_id            INTEGER NOT NULL,
+                welcome_message_id INTEGER NOT NULL,
+                created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                custom_id          TEXT
+            )
+        ''')
+
+        # --------------------------------------------------
+        # Tabelas: histórico de heroes finalizadas
+        # Uma linha por heroes + uma linha por participante,
+        # para o ranking de participação da guild.
+        # --------------------------------------------------
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS heroes_historico (
+                id             TEXT PRIMARY KEY,   -- mesmo id do JSON da heroes ativa
+                boss           TEXT NOT NULL,
+                mastery        TEXT,
+                criador_id     INTEGER NOT NULL,
+                criador_nome   TEXT,
+                agendada_para  TEXT NOT NULL,      -- ISO 8601
+                finalizada_em  TEXT NOT NULL,      -- ISO 8601
+                finalizada_por TEXT NOT NULL       -- nome de quem finalizou ou 'auto'
+            )
+        ''')
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS heroes_participacao (
+                heroes_id TEXT NOT NULL,
+                user_id   INTEGER NOT NULL,
+                user_nome TEXT,
+                classe    TEXT NOT NULL,
+                PRIMARY KEY (heroes_id, user_id)
+            )
+        ''')
 
         # --------------------------------------------------
         # Migração: adiciona coluna custom_id em active_tickets
@@ -146,6 +192,71 @@ def get_all_persistent_formularios() -> List[Tuple]:
             FROM persistent_formularios
         ''')
         return c.fetchall()
+
+# ======================================================
+# FUNÇÕES: histórico de heroes
+# ======================================================
+
+def registrar_heroes_finalizada(
+    heroes_id: str,
+    boss: str,
+    mastery: str,
+    criador_id: int,
+    criador_nome: str,
+    agendada_para: str,
+    finalizada_em: str,
+    finalizada_por: str,
+    participantes: List[Tuple[int, str, str]],  # (user_id, nome, classe)
+) -> None:
+    """
+    Grava uma heroes finalizada no histórico permanente.
+    Chamado no momento da finalização (manual ou automática); é daqui
+    que sai o ranking de participação da guild.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        # OR IGNORE: se uma finalização for reexecutada (ex: crash no meio),
+        # o registro original (quem finalizou, quando) é preservado
+        conn.execute('''
+            INSERT OR IGNORE INTO heroes_historico
+                (id, boss, mastery, criador_id, criador_nome,
+                 agendada_para, finalizada_em, finalizada_por)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (heroes_id, boss, mastery, criador_id, criador_nome,
+              agendada_para, finalizada_em, finalizada_por))
+        # Limpa e regrava os participantes na mesma transação (idempotente)
+        conn.execute("DELETE FROM heroes_participacao WHERE heroes_id = ?", (heroes_id,))
+        conn.executemany('''
+            INSERT INTO heroes_participacao
+                (heroes_id, user_id, user_nome, classe)
+            VALUES (?, ?, ?, ?)
+        ''', [(heroes_id, uid, nome, classe) for uid, nome, classe in participantes])
+
+
+def ranking_participacao(limite: int = 20) -> List[Tuple]:
+    """
+    Retorna [(user_id, user_nome, total de heroes)], do mais ativo para o menos.
+    Base para um futuro comando /atividade.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        c = conn.cursor()
+        # O nome exibido vem da heroes finalizada mais RECENTE de cada pessoa
+        # (nomes mudam; MAX(user_nome) pegaria o alfabeticamente maior)
+        c.execute('''
+            SELECT p.user_id,
+                   (SELECT p2.user_nome
+                    FROM heroes_participacao p2
+                    JOIN heroes_historico h2 ON h2.id = p2.heroes_id
+                    WHERE p2.user_id = p.user_id
+                    ORDER BY h2.finalizada_em DESC
+                    LIMIT 1) AS nome,
+                   COUNT(*) AS total
+            FROM heroes_participacao p
+            GROUP BY p.user_id
+            ORDER BY total DESC
+            LIMIT ?
+        ''', (limite,))
+        return c.fetchall()
+
 
 # ======================================================
 # FUNÇÕES: active_tickets
