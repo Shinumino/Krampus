@@ -464,10 +464,11 @@ class Alistamento(commands.Cog):
             if heroes.id in self.ativas:
                 heroes.salvar()
 
-    async def _mover_membros(self, origem, destino, motivo: str, permitidos: set = None):
+    async def mover_membros(self, origem, destino, motivo: str, permitidos: set = None):
         """Move membros de um canal de voz para outro; devolve (movidos, falhas,
         deixados). Com `permitidos`, move só esses user_ids e conta em `deixados`
-        quem ficou por não estar na lista. Ignora bots e quem já saiu do canal."""
+        quem ficou por não estar na lista. Ignora bots e quem já saiu do canal.
+        Usado pela puxada automática (aqui) e pelo /puxar (cogs/puxar.py)."""
         movidos, falhas, deixados = 0, 0, 0
         for membro in list(origem.members):
             if membro.bot:
@@ -522,7 +523,7 @@ class Alistamento(commands.Cog):
             return
         # Só os inscritos DESTA heroes (+ o shot caller) são puxados
         inscritos = {p.user_id for p in heroes.participantes} | {heroes.criador_id}
-        movidos, falhas, deixados = await self._mover_membros(
+        movidos, falhas, deixados = await self.mover_membros(
             fila, voz, f"Início da heroes {heroes.boss}", permitidos=inscritos
         )
         if movidos or falhas or deixados:
@@ -652,9 +653,9 @@ class Alistamento(commands.Cog):
                 f"❌ Boss inválido! Opções disponíveis: {', '.join(BOSSES)}", ephemeral=True
             )
             return
-        await self._criar_alistamento(interaction, boss, dia, hora, mastery, modo="heroes")
+        await self.criar_alistamento(interaction, boss, dia, hora, mastery, modo="heroes")
 
-    async def _criar_alistamento(
+    async def criar_alistamento(
         self,
         interaction: discord.Interaction,
         titulo: str,
@@ -663,7 +664,8 @@ class Alistamento(commands.Cog):
         mastery: str,
         modo: str,
     ):
-        """Fluxo comum de criação, usado por /alistamento (heroes) e /andares."""
+        """Fluxo comum de criação. Usado por /alistamento (aqui) e pelo
+        /andares (cogs/andares.py), que chama via bot.get_cog("Alistamento")."""
         # Verificar permissão
         user_roles = [role.id for role in interaction.user.roles]
         user_has_permission = (
@@ -775,154 +777,9 @@ class Alistamento(commands.Cog):
         ]
         return filtered[:25]
 
-    # ------------------------------------------------------------------
-    # /andares: mesmo ciclo de vida, party de andares (1 TANK, 2 HEALER, 7 DPS)
-    # ------------------------------------------------------------------
-
-    @app_commands.command(name="andares", description="Cria um alistamento para andares (1 TANK, 2 HEALER, 7 DPS)")
-    @app_commands.guild_only()
-    @app_commands.describe(
-        andar="Quais andares (ex: 80, 90-100)",
-        dia="Dia da Semana",
-        hora="Formato 00:00",
-        mastery="Mastery requerida"
-    )
-    async def andares(
-        self,
-        interaction: discord.Interaction,
-        andar: str,
-        dia: str,
-        hora: str,
-        mastery: str
-    ):
-        """Cria um alistamento de andares com a party 1 TANK / 2 HEALER / 7 DPS"""
-        andar = andar.strip()
-        if not andar or len(andar) > 40:
-            await interaction.response.send_message(
-                "❌ Informe quais andares (ex: **80** ou **90-100**)!", ephemeral=True
-            )
-            return
-        await self._criar_alistamento(
-            interaction, f"ANDARES {andar.upper()}", dia, hora, mastery, modo="andares"
-        )
-
-    @andares.autocomplete("dia")
-    async def dia_autocomplete_andares(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-        return await self.dia_autocomplete(interaction, current)
-
-    # ------------------------------------------------------------------
-    # /puxar: move quem está no canal de fila para a call de quem chamou
-    # ------------------------------------------------------------------
-
-    @app_commands.command(
-        name="puxar",
-        description="Caller: puxa os inscritos do seu alistamento da fila para a sua call",
-    )
-    @app_commands.guild_only()
-    @app_commands.describe(fila="Canal de voz de origem (padrão: o canal de fila configurado)")
-    async def puxar(
-        self,
-        interaction: discord.Interaction,
-        fila: discord.VoiceChannel | discord.StageChannel | None = None,
-    ):
-        # Staff/admin apenas
-        cargos = [role.id for role in interaction.user.roles]
-        pode = (
-            any(role_id in config.CARGOS_STAFF for role_id in cargos)
-            or interaction.user.guild_permissions.administrator
-        )
-        if not pode:
-            await interaction.response.send_message(
-                "❌ Você não tem permissão para usar este comando!", ephemeral=True
-            )
-            return
-
-        # O /puxar é do caller: exige um alistamento de HEROES ativo seu, e é a
-        # lista de inscritos dele que define quem sai da fila (andares não usa)
-        minha_heroes = None
-        for aberta in self.ativas.values():
-            if aberta.criador_id == interaction.user.id and aberta.tem_puxada:
-                minha_heroes = aberta
-                break
-        if minha_heroes is None:
-            await interaction.response.send_message(
-                "❌ O /puxar é para o caller de heroes: você precisa ter um "
-                "alistamento de heroes ativo para puxar os inscritos dele.",
-                ephemeral=True,
-            )
-            return
-
-        # O destino é o canal de voz onde QUEM CHAMOU está (a call da heroes)
-        if interaction.user.voice is None or interaction.user.voice.channel is None:
-            await interaction.response.send_message(
-                "❌ Entre primeiro no canal de voz da heroes: o destino é onde você está.",
-                ephemeral=True,
-            )
-            return
-        destino = interaction.user.voice.channel
-        if config.CANAIS_HEROES and destino.id not in config.CANAIS_HEROES:
-            canais = ", ".join(f"<#{c}>" for c in config.CANAIS_HEROES)
-            await interaction.response.send_message(
-                f"❌ Você precisa estar em um dos canais de heroes para puxar a fila: {canais}",
-                ephemeral=True,
-            )
-            return
-
-        origem = fila
-        if origem is None and config.CANAL_FILA_ID:
-            canal_cfg = interaction.guild.get_channel(config.CANAL_FILA_ID)
-            if isinstance(canal_cfg, (discord.VoiceChannel, discord.StageChannel)):
-                origem = canal_cfg
-        if origem is None:
-            await interaction.response.send_message(
-                "❌ Nenhum canal de fila configurado. Informe no parâmetro `fila` "
-                "ou configure CANAL_FILA no .env.",
-                ephemeral=True,
-            )
-            return
-        if origem.id == destino.id:
-            await interaction.response.send_message(
-                "❌ A fila e o destino são o mesmo canal.", ephemeral=True
-            )
-            return
-
-        # Só os inscritos DA SUA heroes (+ você) saem da fila
-        permitidos = {p.user_id for p in minha_heroes.participantes} | {minha_heroes.criador_id}
-
-        # Mover várias pessoas leva mais de 3s; defer segura a interação aberta
-        await interaction.response.defer(ephemeral=True)
-        movidos, falhas, deixados = await self._mover_membros(
-            origem, destino, f"/puxar por {interaction.user.display_name}", permitidos=permitidos
-        )
-
-        if movidos == 0 and falhas == 0:
-            if deixados:
-                await interaction.followup.send(
-                    f"Ninguém foi puxado: **{deixados}** pessoa(s) na fila, mas nenhuma "
-                    f"inscrita na sua heroes **{minha_heroes.boss}**.",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.followup.send(
-                    f"O canal {origem.mention} está vazio, ninguém para puxar.", ephemeral=True
-                )
-            return
-        resposta = f"✅ **{movidos}** pessoa(s) puxada(s) de {origem.mention} para {destino.mention}."
-        if deixados:
-            resposta += f"\n👥 **{deixados}** ficaram na fila por não estarem inscritas na sua heroes."
-        if falhas:
-            resposta += (
-                f"\n⚠️ **{falhas}** não puderam ser movidas. Confira se tenho as permissões "
-                f"**Mover Membros** e **Conectar** no canal de destino (quem é movido não "
-                f"precisa poder conectar, mas EU preciso), ou se essas pessoas saíram da "
-                f"call durante o comando."
-            )
-        if isinstance(destino, discord.StageChannel):
-            resposta += (
-                "\n⚠️ O destino é um canal **Stage**: quem chega entra como plateia (mudo) "
-                "e precisa ser promovido para falar."
-            )
-        await interaction.followup.send(resposta, ephemeral=True)
+    # Os comandos /andares e /puxar moram em arquivos próprios
+    # (cogs/andares.py e cogs/puxar.py) e usam este cog como motor via
+    # bot.get_cog("Alistamento"): criar_alistamento(), mover_membros(), ativas.
 
 
 async def setup(bot):
