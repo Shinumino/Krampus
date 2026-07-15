@@ -18,7 +18,10 @@ class Andares(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="andares", description="Cria um alistamento para andares (1 TANK, 2 HEALER, 7 DPS)")
+    @app_commands.command(
+        name="andares",
+        description="Cria um alistamento para andares (1 TANK, 2 HEALER, 7 DPS)"
+    )
     @app_commands.guild_only()
     @app_commands.describe(
         andar="Quais andares (ex: 80, 90-100)",
@@ -48,16 +51,49 @@ class Andares(commands.Cog):
                 "❌ Informe quais andares (ex: **80** ou **90-100**)!", ephemeral=True
             )
             return
+
+        # O título do alistamento vira "ANDARES <andar>"
+        titulo = f"ANDARES {andar.upper()}"
         await alistamentos.criar_alistamento(
-            interaction, f"ANDARES {andar.upper()}", dia, hora, mastery, modo="andares"
+            interaction, titulo, dia, hora, mastery, modo="andares"
         )
 
     @andares.autocomplete("dia")
-    async def dia_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    async def dia_autocomplete(
+        self, _interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
         return [
             app_commands.Choice(name=dia, value=dia)
             for dia in DIAS_SEMANA
             if current.lower() in dia.lower()
+        ][:25]
+
+    @andares.autocomplete("hora")
+    async def hora_autocomplete(
+        self, _interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """Sugere horários comuns (de hora em hora e meias horas)."""
+        sugestoes = [
+            f"{h:02d}:{m:02d}"
+            for h in range(0, 24)
+            for m in (0, 30)
+        ]
+        return [
+            app_commands.Choice(name=h, value=h)
+            for h in sugestoes
+            if current in h
+        ][:25]
+
+    @andares.autocomplete("mastery")
+    async def mastery_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """Sugere valores comuns de mastery."""
+        sugestoes = ["100", "150", "200", "250", "300", "350", "400", "450", "500"]
+        return [
+            app_commands.Choice(name=m, value=m)
+            for m in sugestoes
+            if current in m
         ][:25]
 
 
