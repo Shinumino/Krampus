@@ -1,8 +1,9 @@
 # heroes.py
 # Modelo de domínio de uma "heroes" (alistamento de boss agendado).
-# Uma heroes ATIVA vive como um arquivo JSON em data/heroes/<id>.json (estado de controle).
-# Quando finalizada, os dados de participação migram para o SQLite (ver database.py)
-# e o JSON é apagado.
+# Um alistamento ATIVO vive como um arquivo JSON em data/<modo>/<id>.json
+# (estado de controle): heroes em data/heroes/, andares em data/andares/.
+# Quando finalizado, os dados de participação migram para o SQLite (ver
+# database.py) e o JSON é apagado.
 
 import json
 import os
@@ -10,8 +11,18 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 
-# Pasta dos JSONs ancorada no arquivo, não no diretório de onde o bot foi iniciado
-HEROES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "heroes")
+# Pastas dos JSONs ancoradas no arquivo, não no diretório de onde o bot foi
+# iniciado. Cada modo tem a sua pasta: heroes e andares são atividades
+# separadas e não se misturam no disco
+_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+HEROES_DIR = os.path.join(_DATA_DIR, "heroes")
+ANDARES_DIR = os.path.join(_DATA_DIR, "andares")
+
+
+def pasta_do_modo(modo: str) -> str:
+    # Lê as variáveis do módulo NA HORA (e não numa tabela pré-montada) para
+    # os testes poderem trocá-las por pastas temporárias
+    return ANDARES_DIR if modo == "andares" else HEROES_DIR
 
 # Índices compatíveis com datetime.weekday() (segunda = 0)
 DIAS_SEMANA = ["SEGUNDA", "TERÇA", "QUARTA", "QUINTA", "SEXTA", "SÁBADO", "DOMINGO"]
@@ -244,12 +255,12 @@ class Heroes:
     # ---------- persistência JSON ----------
 
     def _caminho(self) -> str:
-        return os.path.join(HEROES_DIR, f"{self.id}.json")
+        return os.path.join(pasta_do_modo(self.modo), f"{self.id}.json")
 
     def salvar(self):
         # Escrita atômica: grava num .tmp e troca pelo definitivo com os.replace.
         # Se o bot morrer no meio da escrita, o JSON antigo continua intacto.
-        os.makedirs(HEROES_DIR, exist_ok=True)
+        os.makedirs(pasta_do_modo(self.modo), exist_ok=True)
         temporario = self._caminho() + ".tmp"
         with open(temporario, "w", encoding="utf-8") as f:
             json.dump(asdict(self), f, ensure_ascii=False, indent=2)
@@ -276,17 +287,26 @@ class Heroes:
 
     @classmethod
     def carregar_todas(cls) -> list:
-        """Lê todos os JSONs de heroes ativas (usado na inicialização do bot)."""
-        if not os.path.isdir(HEROES_DIR):
-            return []
+        """Lê todos os JSONs de alistamentos ativos, de todas as pastas de
+        modo (usado na inicialização do bot)."""
         ativas = []
-        for nome in os.listdir(HEROES_DIR):
-            if not nome.endswith(".json"):
+        # Fotografa a lista de arquivos ANTES de carregar: a migração abaixo
+        # grava em outra pasta, e sem a foto o mesmo alistamento seria lido de
+        # novo ao varrer a pasta de destino (= heroes duplicada na memória).
+        # dict.fromkeys tira duplicatas mantendo a ordem (se as duas pastas
+        # apontarem para o mesmo lugar, não lê os arquivos duas vezes)
+        arquivos = []
+        for pasta in dict.fromkeys((HEROES_DIR, ANDARES_DIR)):
+            if not os.path.isdir(pasta):
                 continue
-            caminho = os.path.join(HEROES_DIR, nome)
+            for nome in os.listdir(pasta):
+                if nome.endswith(".json"):
+                    arquivos.append(os.path.join(pasta, nome))
+        for caminho in arquivos:
+            nome = os.path.basename(caminho)
             try:
                 with open(caminho, "r", encoding="utf-8") as f:
-                    ativas.append(cls.de_dict(json.load(f)))
+                    instancia = cls.de_dict(json.load(f))
             except (json.JSONDecodeError, TypeError, KeyError) as e:
                 # Quarentena em vez de só ignorar: o problema fica visível no disco
                 print(f"[HEROES] JSON inválido movido para quarentena: {nome} ({e})")
@@ -294,4 +314,18 @@ class Heroes:
                     os.replace(caminho, caminho + ".corrupt")
                 except OSError:
                     pass
+                continue
+            # Migração: um andares salvo antes da separação de pastas ainda
+            # mora em data/heroes/; regrava no lugar certo e apaga o antigo
+            if os.path.abspath(caminho) != os.path.abspath(instancia._caminho()):
+                instancia.salvar()
+                try:
+                    os.remove(caminho)
+                except OSError:
+                    pass
+                print(
+                    f"[HEROES] Alistamento {instancia.id} (modo {instancia.modo}) "
+                    f"movido para a pasta do seu modo"
+                )
+            ativas.append(instancia)
         return ativas
