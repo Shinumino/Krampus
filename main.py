@@ -29,9 +29,14 @@ class Krampus(commands.Bot):
                 except Exception as e:
                     print(f"❌ Erro ao carregar '{filename}': {e}")
 
-        # Sincroniza os comandos slash
-        await self.tree.sync()
-        print("✅ Comandos slash sincronizados!")
+        # Sincroniza os comandos slash e mostra exatamente o que o Discord
+        # registrou (diagnóstico: se um comando não aparece no menu, esta
+        # linha diz na hora se ele foi registrado ou não)
+        try:
+            sincronizados = await self.tree.sync()
+            print(f"✅ {len(sincronizados)} comandos slash sincronizados: {sorted(c.name for c in sincronizados)}")
+        except discord.HTTPException as e:
+            print(f"❌ Falha ao sincronizar comandos slash (registros antigos continuam valendo): {e}")
 
     async def on_ready(self):
         print(f"✅ Bot {self.user} online e pronto!")
