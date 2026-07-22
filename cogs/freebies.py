@@ -334,10 +334,13 @@ class Freebies(commands.Cog):
 
     @app_commands.command(
         name="codigos",
-        description="Staff: verifica agora e mostra os códigos de Where Winds Meet ativos",
+        description="Staff: mostra os códigos de Where Winds Meet ativos (sem postar no canal)",
     )
     @app_commands.guild_only()
-    async def codigos(self, interaction: discord.Interaction):
+    @app_commands.describe(
+        anunciar="True = posta os códigos novos no canal AGORA, com ping. Padrão: só mostra para você",
+    )
+    async def codigos(self, interaction: discord.Interaction, anunciar: bool = False):
         if not _e_staff(interaction):
             await interaction.response.send_message(
                 "❌ Você não tem permissão para usar este comando!", ephemeral=True
@@ -354,18 +357,56 @@ class Freebies(commands.Cog):
             )
             return
 
-        anunciados = await self._processar(entradas, apenas_guild=interaction.guild.id)
-        novos = anunciados.get(interaction.guild.id, [])
+        # Lido ANTES de qualquer anúncio: é o que diz o que ainda está pendente
+        configurado = db.get_freebies_config(interaction.guild.id) is not None
+        vistos = db.codigos_ja_vistos(interaction.guild.id)
+        pendentes = [e["code"] for e in entradas if e.get("code") and e["code"] not in vistos]
 
-        if novos:
-            rodape = f"\n\n📣 **{len(novos)}** código(s) novo(s) postado(s) no canal de freebies agora."
-        elif db.get_freebies_config(interaction.guild.id):
-            rodape = "\n\nNenhum código novo desde o último aviso."
+        if not anunciar:
+            # Modo padrão: espiar. Não posta nada, não marca nada, não faz ping.
+            if not configurado:
+                rodape = "⚠️ Nenhum canal configurado: use `/set_freebies` para ligar os avisos."
+            elif not vistos:
+                rodape = (
+                    f"Ainda não memorizei nenhuma lista. Na próxima verificação eu guardo "
+                    f"estes **{len(entradas)}** sem postar nada, e passo a avisar só o que vier depois."
+                )
+            elif pendentes:
+                rodape = (
+                    f"**{len(pendentes)}** ainda não anunciado(s): {', '.join(f'`{c}`' for c in pendentes)}\n"
+                    f"Saem sozinhos no próximo ciclo (até {INTERVALO_MINUTOS} min), ou agora "
+                    f"com `/codigos anunciar:True`."
+                )
+            else:
+                rodape = "Tudo em dia: nenhum código novo desde o último aviso."
+
+        elif not configurado:
+            rodape = "⚠️ Não dá para anunciar: nenhum canal configurado. Use `/set_freebies` primeiro."
+
+        elif not vistos:
+            # Primeira verificação do servidor: memoriza calado em vez de
+            # despejar a lista inteira no canal, mesmo com anunciar=True
+            await self._processar(entradas, apenas_guild=interaction.guild.id)
+            rodape = (
+                f"Memorizei os **{len(entradas)}** códigos que já estavam no ar, sem postar nada "
+                "(era a primeira verificação). Daqui pra frente aviso só o que for novo."
+            )
+
         else:
-            rodape = "\n\n⚠️ Nenhum canal configurado: use `/set_freebies` para ligar os avisos."
+            anunciados = await self._processar(entradas, apenas_guild=interaction.guild.id)
+            novos = anunciados.get(interaction.guild.id, [])
+            if novos:
+                rodape = f"📣 **{len(novos)}** código(s) postado(s) no canal agora."
+            elif pendentes:
+                rodape = (
+                    "⚠️ Tinha código novo mas eu não consegui postar no canal. "
+                    "Confere se ainda tenho permissão lá."
+                )
+            else:
+                rodape = "Nenhum código novo desde o último aviso."
 
         await interaction.followup.send(
-            f"**{len(entradas)} códigos ativos agora:**\n{_formatar(entradas)}{rodape}",
+            f"**{len(entradas)} códigos ativos agora:**\n{_formatar(entradas)}\n\n{rodape}",
             ephemeral=True,
         )
 
