@@ -44,6 +44,30 @@ def _e_staff(interaction: discord.Interaction) -> bool:
     )
 
 
+async def _resolver_canal(canal, interaction: discord.Interaction):
+    """
+    Transforma a opção do slash command num canal de verdade.
+
+    O parâmetro chega como AppCommandChannel (o "cru" do Discord) DE PROPÓSITO:
+    anotar direto como discord.TextChannel faz a discord.py resolver o canal
+    SÓ no cache antes do comando rodar, e se ele não estiver lá o comando
+    explode com TransformerError antes da primeira linha nossa executar.
+    Aqui a gente tenta o cache e, se falhar, busca na API, e ainda consegue
+    responder com um erro que a staff entende.
+
+    Devolve None quando o bot realmente não alcança o canal.
+    """
+    if canal is None:
+        return interaction.channel
+    encontrado = canal.resolve()
+    if encontrado is not None:
+        return encontrado
+    try:
+        return await canal.fetch()
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+        return None
+
+
 def _codigos_de(entradas: list) -> list:
     """Só os códigos das entradas do site, ignorando o que vier sem 'code'."""
     return [e["code"] for e in entradas if e.get("code")]
@@ -169,6 +193,31 @@ class Freebies(commands.Cog):
     # Comandos
     # ------------------------------------------------------------------
 
+    async def cog_app_command_error(self, interaction: discord.Interaction, error):
+        """
+        Rede de segurança: sem isto, um erro antes/dentro do comando some no
+        console do host e quem chamou vê "a aplicação não respondeu", sem
+        pista nenhuma do que aconteceu.
+        """
+        if isinstance(error, app_commands.TransformerError):
+            aviso = (
+                "❌ Não consegui usar o valor que você escolheu nesse comando. "
+                "Se foi um canal, provavelmente eu não tenho **Ver Canal** nele."
+            )
+        else:
+            aviso = "❌ Deu um erro inesperado aqui. Avisa a staff para olhar o log do bot."
+
+        print(f"[FREEBIES] Erro no comando /{interaction.command.name if interaction.command else '?'}:\n"
+              f"{''.join(traceback.format_exception(type(error), error, error.__traceback__))}")
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(aviso, ephemeral=True)
+            else:
+                await interaction.response.send_message(aviso, ephemeral=True)
+        except discord.HTTPException:
+            pass  # interação já expirou; o log acima é o que sobra
+
     @app_commands.command(
         name="set_freebies",
         description="Staff: define o canal (e o cargo) dos avisos de código de Where Winds Meet",
@@ -181,7 +230,7 @@ class Freebies(commands.Cog):
     async def set_freebies(
         self,
         interaction: discord.Interaction,
-        canal: discord.TextChannel | None = None,
+        canal: app_commands.AppCommandChannel | None = None,
         cargo: discord.Role | None = None,
     ):
         if not _e_staff(interaction):
@@ -190,18 +239,41 @@ class Freebies(commands.Cog):
             )
             return
 
-        destino = canal or interaction.channel
+        # Daqui pra frente pode ter chamada de rede (fetch do canal e consulta
+        # ao site), que estoura os 3 segundos de resposta do Discord
+        await interaction.response.defer(ephemeral=True)
+
+        destino = await _resolver_canal(canal, interaction)
+        if destino is None:
+            await interaction.followup.send(
+                f"❌ Não consigo enxergar o canal **{canal.name}**. Isso quase sempre é "
+                "permissão: o meu cargo precisa de **Ver Canal** nele. Dá a permissão "
+                "(ou escolhe outro canal) e roda o comando de novo.",
+                ephemeral=True,
+            )
+            return
+
+        if not isinstance(destino, (discord.TextChannel, discord.Thread, discord.VoiceChannel)):
+            await interaction.followup.send(
+                f"❌ **{destino.name}** não é um canal onde dá para escrever "
+                "(parece categoria ou fórum). Escolhe um canal de texto.",
+                ephemeral=True,
+            )
+            return
+
         permissoes = destino.permissions_for(interaction.guild.me)
-        if not (permissoes.send_messages and permissoes.embed_links):
-            await interaction.response.send_message(
+        pode_falar = (
+            permissoes.send_messages_in_threads
+            if isinstance(destino, discord.Thread)
+            else permissoes.send_messages
+        )
+        if not (pode_falar and permissoes.embed_links):
+            await interaction.followup.send(
                 f"❌ Não consigo postar em {destino.mention}: preciso de "
                 "**Enviar mensagens** e **Inserir links** nesse canal.",
                 ephemeral=True,
             )
             return
-
-        # A primeira configuração consulta o site, o que demora
-        await interaction.response.defer(ephemeral=True)
 
         db.set_freebies_config(interaction.guild.id, destino.id, cargo.id if cargo else None)
 
